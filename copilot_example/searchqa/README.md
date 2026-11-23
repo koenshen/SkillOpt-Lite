@@ -55,6 +55,26 @@ also accepts Lite's original Azure and OpenAI authentication modes through
 The runner uses the Lite repository’s `.venv/bin/python` if present, otherwise
 `python3`; `SKILLOPT_LITE_PYTHON` selects a specific interpreter.
 
+### DeepSeek with OpenCode
+
+OpenCode 1.18.18 can run the same loop prompt as the coding agent. From this
+directory, with the OpenAI-compatible endpoint, key and model already exported,
+the training entry point is:
+
+```bash
+python3 opencode_loop.py --rounds 3 --batch 20
+```
+
+`OPENAI_COMPATIBLE_MODEL` selects both the answering and optimizing model.
+`TARGET_OPENAI_COMPATIBLE_MAX_TOKENS` sets the answer budget and
+`OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS` sets OpenCode's generation cap.
+For the SkillOpt comparison, export both as `131072` and
+`SKILLOPT_WORKERS=24` for the parallel answer calls. The native Copilot prompt
+files supply the improvement instructions, gate, rollback and final test.
+OpenCode needs to be on `PATH`; the Python interpreter selected for `run.sh`
+needs Lite's dependencies. On the CPU server the existing environment can be
+selected with `export SKILLOPT_LITE_PYTHON="$HOME/miniconda3/envs/rdagent/bin/python"`.
+
 ## Notes (vs the old reflect.py)
 
 The `/skillopt-loop` does **not** use `reflect.py` / `analyst_*.md`.

@@ -47,14 +47,31 @@ def parse_args():
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--limit", type=int, default=20, help="Training samples to export (0: all)")
     parser.add_argument("--eval_limit", type=int, default=0, help="Training batch size (0: full split)")
-    parser.add_argument("--target_model", default=os.getenv("SKILLOPT_LITE_TARGET_MODEL", "gpt-5.4"))
+    parser.add_argument("--target_model", default=(
+        os.getenv("SKILLOPT_LITE_TARGET_MODEL") or os.getenv("TARGET_OPENAI_COMPATIBLE_MODEL")
+        or os.getenv("OPENAI_COMPATIBLE_MODEL") or "gpt-5.4"
+    ))
     parser.add_argument("--reasoning", default="medium")
-    parser.add_argument("--workers", type=int, default=16)
+    parser.add_argument("--workers", type=int, default=os.getenv("SKILLOPT_WORKERS", "16"))
+    parser.add_argument("--max_completion_tokens", type=int,
+                        help="Answer budget, limited by the configured target cap")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--split_dir", type=Path, help="Materialized SkillOpt SearchQA split directory")
     args = parser.parse_args()
     if args.limit < 0 or args.eval_limit < 0 or args.workers < 1:
         parser.error("limits must be nonnegative and workers must be positive")
+    cap = os.getenv("TARGET_OPENAI_COMPATIBLE_MAX_TOKENS") or os.getenv("OPENAI_COMPATIBLE_MAX_TOKENS")
+    if cap:
+        try:
+            target_cap = int(cap)
+        except ValueError:
+            parser.error("target token cap must be an integer")
+        if args.max_completion_tokens is None:
+            args.max_completion_tokens = target_cap
+        else:
+            args.max_completion_tokens = min(args.max_completion_tokens, target_cap)
+    if args.max_completion_tokens is not None and args.max_completion_tokens < 1:
+        parser.error("target token budget must be positive")
     if args.split != "train" and args.eval_limit:
         parser.error("fixed dev and test use the entire split; use --eval_limit 0")
     return args
@@ -98,6 +115,7 @@ def run_evaluation(rows, args, skill_path, out):
     from skillopt.utils.scoring import compute_score
 
     config = load_config(str(LITE_ROOT / "configs/searchqa/default.yaml"))["env"]
+    answer_budget = args.max_completion_tokens or config["max_completion_tokens"]
     set_target_backend("openai_chat")
     set_target_deployment(args.target_model)
     set_reasoning_effort(None if args.target_model.startswith("gpt-4o") else args.reasoning)
@@ -105,7 +123,7 @@ def run_evaluation(rows, args, skill_path, out):
     (out / "item_ids.json").write_text(json.dumps(ids), encoding="utf-8")
     results = run_batch(
         rows, str(out), skill_path.read_text(encoding="utf-8"), workers=args.workers,
-        max_turns=config["max_turns"], max_completion_tokens=config["max_completion_tokens"],
+        max_turns=config["max_turns"], max_completion_tokens=answer_budget,
         exec_timeout=config["exec_timeout"], task_timeout=config["exec_timeout"],
     )
     by_id = {row["id"]: row for row in results}
@@ -115,7 +133,8 @@ def run_evaluation(rows, args, skill_path, out):
         raise RuntimeError(f"All {len(rows)} SearchQA requests failed; see {out / 'results.jsonl'}")
     hard, soft = compute_score(results)
     summary = dict(split=args.split, skill=str(skill_path), n_items=len(rows), hard=hard, soft=soft,
-                   target_model=args.target_model, seed=args.seed, token_usage=get_token_summary())
+                   target_model=args.target_model, seed=args.seed, workers=args.workers,
+                   max_completion_tokens=answer_budget, token_usage=get_token_summary())
     (out / "eval_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Results: hard={hard:.4f}  soft={soft:.4f}  (n={len(rows)})", flush=True)
     return [by_id[i] for i in ids]
