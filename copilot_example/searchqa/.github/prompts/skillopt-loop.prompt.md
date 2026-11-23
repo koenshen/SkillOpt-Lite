@@ -18,7 +18,7 @@ final:
     test(full)                                         — one-shot generalization report
 ```
 
-**Target model**: `gpt-5.4` (configured in `run.sh`).
+**Target model**: use the deployment configured for `run.sh` (default `gpt-5.4`).
 
 **Split semantics**
 
@@ -50,8 +50,8 @@ AND produce the first batch of samples for round 1's improve.
    ```
 
 3. **Seed round-1 samples from a train batch** (use `--seed 1` so round 1
-   sees a different 20 items than round 2 etc. — `run.sh` forwards seed to
-   `eval_only.py` which subsamples via `random.Random(seed).sample`):
+   sees a different 20 items than round 2 etc. — `run.sh` selects from the fixed
+   400 training IDs via `random.Random(seed).sample`):
    ```bash
    rm -rf workspace/.skillopt/samples/failed/* workspace/.skillopt/samples/passed/*
    bash run.sh --split train --eval_limit ${input:batch:20} --limit ${input:batch:20} --seed 1
@@ -86,8 +86,7 @@ rm -rf workspace/.skillopt/samples/failed/* workspace/.skillopt/samples/passed/*
 bash run.sh --skill workspace/skill.md --split val --eval_limit 0 --limit 0
 ```
 Capture `hard=<X>` → `cand_acc`, `soft=<Y>` → `cand_soft`. Compute
-`Δ = cand_acc − current_acc`. (Val samples produced here are throwaway;
-step 5 will overwrite them.)
+`Δ = cand_acc − current_acc`. Only train rollouts export feedback samples.
 
 ### 4. Gate decision
 
@@ -99,7 +98,7 @@ Same logic as `skillopt/evaluation/gate.py` (`evaluate_gate`):
 | `cand_acc > current_acc` (but ≤ best)  | **accept**          | keep skill; do **not** update `best_*` |
 | `cand_acc ≤ current_acc`               | **reject**          | rollback skill from `__before.md`; do **not** update `best_*` |
 
-Dead band for noise (val is full 602 so EM is fairly stable, but still
+Dead band for noise (val is full 200 so EM is fairly stable, but still
 useful for tiny moves):
 
 - `Δ ≥ +0.01` → treat as improvement (accept / accept_new_best as above)
@@ -222,7 +221,7 @@ Then:
 
 ## Constraints
 
-- Target model is `gpt-5.4`. Don't change it.
+- Use the same configured target model in every round and on test.
 - **Never delete** files under `workspace/.skillopt/history/`.
 - **No-poll discipline for long commands.** Per-round gate (val=200) and
   final test (1400) take a few minutes each. For any `bash run.sh` call

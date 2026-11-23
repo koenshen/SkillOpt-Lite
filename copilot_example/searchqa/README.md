@@ -20,48 +20,40 @@ for plugin debugging.
 | `rollout.py` | `process_one(item, skill) -> result`; `run_batch(items, skill)` parallel runner |
 | `evaluator.py` | `evaluate(predicted, gold) -> {hard, soft, fail_reason}` |
 | `adapter.py` | dataset row → rollout input shape |
-| `dataloader.py` | load splits from `data/searchqa_id_split/` |
+| `dataloader.py` | load materialized SearchQA split files |
 | `reflect.py` | per-sample error analysis (old SkillOpt reflect, kept for reference) |
 | `prompts/rollout_system.md` | agent system prompt template (`{skill_section}` placeholder) |
 | `prompts/analyst_error.md`, `analyst_success.md` | old reflect prompts |
 | `skills/initial.md` | baseline skill — good starting point for plugin demo |
 
-## Generating samples for the loop
+## Fixed SearchQA workflow
 
-Every time `run.sh` finishes, `make_samples.py` is called automatically to
-expand the run's `results.jsonl` into per-item files under
-`workspaces/<model>/.skillopt/samples/{failed,passed}/`. Manual refresh:
+On the CPU server the default data path is `../SkillOpt/data/searchqa_split`
+relative to the Lite repository root. Set `SEARCHQA_SPLIT_DIR` or pass
+`--split_dir` for another copy. Each split contains an `items.json` array
+with `id`, `question`, `context` and `answers`. The loader verifies the counts
+and SHA-256 fingerprints of the ordered IDs for all 400 train, 200 dev and
+1,400 test items. Lite uses its own SearchQA rollout, model client and scorer.
 
-```bash
-python copilot_example/make_samples.py \
-    --results /path/to/searchqa_run/test_eval/results.jsonl \
-    --workspace copilot_example/searchqa/workspaces/gpt-5.5 \
-    --env searchqa --limit 20
-```
+In a coding-agent session opened in `copilot_example/searchqa/`, the native
+loop can be invoked with its usual parameters, for example
+`/skillopt-loop rounds=3 batch=20`. Each train call samples from the fixed
+400 items using the round seed. The agent receives the training samples
+exported under `workspace/.skillopt/samples/`. Each validation call scores all
+200 dev items. The final call scores the selected skill on all 1,400 test items.
+The evaluator uses strict EM and multi-answer token F1. Its per-item results
+and summary are in `workspace/.skillopt/_eval_run/`.
 
-The exporter handles SearchQA-specific quirks:
-- `question` + `context` are concatenated into the `## Input` section
-- `predicted_text` / `correct_text` map to `## Agent output` / `## Expected`
-- `fail_reason` is preserved in `## Notes`
-
-## Run the /skillopt-loop
-
-**Open the `copilot_example/searchqa/` folder in your coding agent** (VS Code
-Copilot Chat / Codex CLI / Claude Code / kimi-code / glm-code /
-deepseek-tui — any host that reads local `.github/prompts/*.prompt.md`),
-then **type this at the coding-agent chat prompt** (not a shell terminal):
-
-Open `copilot_example/searchqa` with your coding agent, then type at the
-chat prompt:
-
-```
-/skillopt-loop rounds=2 batch=40 target=gpt-5.4-nano
-```
-
-That's the whole loop — your coding agent handles env setup (pip
-install, `source ../env.sh`, data download) and then runs `run.sh`,
-inspects samples, patches `skill.md`, val-gates, and archives, all on
-its own. No manual bootstrap needed.
+`bash run.sh --check-data` verifies the fixed splits without model credentials or
+workspace writes. `bash run.sh --help` describes the phase runner. The native target is
+`gpt-5.4` with medium reasoning. Set `SKILLOPT_LITE_TARGET_MODEL` if the
+deployment uses a different name. An existing SkillOpt OpenAI-compatible
+configuration uses its `OPENAI_COMPATIBLE_BASE_URL` and
+`OPENAI_COMPATIBLE_API_KEY` (or target-specific equivalents). The runner
+also accepts Lite's original Azure and OpenAI authentication modes through
+`env.sh`. Install Lite’s `requirements.txt` in a Python 3.10+ environment.
+The runner uses the Lite repository’s `.venv/bin/python` if present, otherwise
+`python3`; `SKILLOPT_LITE_PYTHON` selects a specific interpreter.
 
 ## Notes (vs the old reflect.py)
 

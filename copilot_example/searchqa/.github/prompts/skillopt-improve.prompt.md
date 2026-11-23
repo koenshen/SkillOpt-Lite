@@ -116,7 +116,7 @@ previous val run under `workspace/.skillopt/_eval_run/`.
 
 ## Constraints
 
-- Target model is **`gpt-5.4`** (configured in `run.sh`). Don't change it.
+- Keep the target deployment configured for `run.sh` throughout the loop.
 - Do **not** run `run.sh` yourself in this prompt (eval is the user's call —
   use `/skillopt-loop` for closed-loop).
 - Do **not** touch anything outside `workspace/`.

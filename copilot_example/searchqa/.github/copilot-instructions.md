@@ -31,7 +31,7 @@ against whichever model was last run.
 
 - **Single-turn QA**: question + `[DOC]`-delimited retrieved passages
   (truncated to ~6k chars) → one LLM call → `<answer>...</answer>`.
-- **Target model**: `gpt-5.4`, reasoning `medium`.
+- **Target model**: configured deployment (default `gpt-5.4`), reasoning `medium`.
 - **Scoring** (`evaluator.py`):
   - `hard` = SQuAD-style **Exact Match** (normalized: lowercase, strip
     punctuation, drop `a|an|the`, collapse whitespace).
@@ -85,12 +85,12 @@ fail_reason: EM=0: predicted 'Barack H. Obama' but expected 'Barack Obama'
 
 Quick smoke (5 items, ~30s):
 ```bash
-bash run.sh --eval_limit 5 --limit 5
+bash run.sh --split train --eval_limit 5 --limit 5
 ```
 
 Standard check (20 items, ~1–2 min on gpt-5.4):
 ```bash
-bash run.sh --eval_limit 20 --limit 20
+bash run.sh --split train --eval_limit 20 --limit 20
 ```
 
 Full test split:

@@ -8,6 +8,7 @@
 #
 #   azure_cli   Azure OpenAI + AAD via `az login`     (no api key needed)
 #   azure_key   Azure OpenAI + api key                (AZURE_OPENAI_API_KEY)
+#   openai_compatible  Existing SkillOpt OPENAI_COMPATIBLE_* role credentials
 #   openai      Official OpenAI (or any OpenAI-       (OPENAI_API_KEY,
 #               compatible endpoint, e.g. together,    optional OPENAI_BASE_URL)
 #               vLLM, ollama)
@@ -59,6 +60,14 @@ case "${_MODE}" in
         unset OPENAI_API_KEY OPENAI_BASE_URL
         ;;
 
+    openai_compatible)
+        # Lite's own OpenAI client accepts a compatible endpoint via its auth mode.
+        export TARGET_AZURE_OPENAI_ENDPOINT="${TARGET_OPENAI_COMPATIBLE_BASE_URL:-${OPENAI_COMPATIBLE_BASE_URL:?Set OPENAI_COMPATIBLE_BASE_URL}}"
+        export TARGET_AZURE_OPENAI_API_KEY="${TARGET_OPENAI_COMPATIBLE_API_KEY:-${OPENAI_COMPATIBLE_API_KEY:?Set OPENAI_COMPATIBLE_API_KEY}}"
+        export TARGET_AZURE_OPENAI_AUTH_MODE=openai_compatible
+        export TARGET_AZURE_OPENAI_API_VERSION=openai-compat
+        ;;
+
     openai)
         : "${OPENAI_API_KEY:?Set OPENAI_API_KEY (from https://platform.openai.com/api-keys)}"
         # Backend uses OpenAI SDK with base_url + api_key when auth_mode = openai_compatible.
@@ -71,7 +80,7 @@ case "${_MODE}" in
 
     *)
         echo "[env.sh] ERROR: unknown SKILLOPT_AUTH_MODE='${_MODE}'." >&2
-        echo "         Valid modes: azure_cli | azure_key | openai" >&2
+        echo "         Valid modes: azure_cli | azure_key | openai | openai_compatible" >&2
         return 1 2>/dev/null || exit 1
         ;;
 esac
@@ -106,4 +115,4 @@ notify_done() {
 
 echo "[env.sh] mode=${_MODE}"
 echo "[env.sh] PROJECT_ROOT=${PROJECT_ROOT}"
-echo "[env.sh] endpoint=${AZURE_OPENAI_ENDPOINT}"
+echo "[env.sh] endpoint=${AZURE_OPENAI_ENDPOINT:-${TARGET_OPENAI_COMPATIBLE_BASE_URL:-${OPENAI_COMPATIBLE_BASE_URL:-}}}"
