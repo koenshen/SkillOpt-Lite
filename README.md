@@ -164,6 +164,62 @@ in [docs/authentication.md](docs/authentication.md).
 
 ---
 
+## Fixed SearchQA on the CPU server
+
+This original run uses runtime commit `9703dc25aa8be0b09c50b4e54fdb6feaa4b113a5`, OpenCode, and the native three-round loop with a training batch of 20. Each round draws from the fixed 400 training items. The gate uses all 200 dev items and the final test uses 1,400. Both model roles use the same deployment and a 131072-token output cap. The answering pool has 24 workers.
+
+Run the following in Bash on `ssh cpu` with `OPENAI_COMPATIBLE_API_KEY` already exported. For an interactive login, enter the key with `read -rsp 'TokenHub key: ' OPENAI_COMPATIBLE_API_KEY` and then `export OPENAI_COMPATIBLE_API_KEY`. The new tmux server inherits it. Use a fresh Lite workspace for an independent repetition. The block exits if the designated output directory or native workspace is already in use.
+
+```bash
+# CPU tmux launch (20261124-r1)
+(
+    set -eu
+    umask 077
+    : "${OPENAI_COMPATIBLE_API_KEY:?export your TokenHub key in this shell}"
+    repo=/mnt/sdd3/xuancheng/code/github/SkillOpt-Lite
+    runtime=9703dc25aa8be0b09c50b4e54fdb6feaa4b113a5
+    git -C "$repo" diff --quiet "$runtime" HEAD -- . ':(exclude)README.md'
+    example="$repo/copilot_example/searchqa"
+    name=sq-original-skillopt-lite
+    export LITE_RUN_DIR="$HOME/searchqa-original-runs/20261124-r1/skillopt-lite"
+    export SEARCHQA_SPLIT_DIR=/mnt/sdd3/xuancheng/code/github/SkillOpt/data/searchqa_split
+    export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
+    export OPENAI_COMPATIBLE_MODEL=deepseek-v4.1-flash-1017/huoshan_L/sfc
+    export TARGET_OPENAI_COMPATIBLE_MAX_TOKENS=131072 OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+    export SKILLOPT_WORKERS=24 SKILLOPT_AUTH_MODE=openai_compatible
+    export SKILLOPT_LITE_PYTHON="$HOME/miniconda3/envs/rdagent/bin/python"
+    export PATH="$HOME/.opencode/bin:$HOME/miniconda3/envs/rdagent/bin:$PATH"
+    export PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+    export SKILLOPT_DONE_FILE="$LITE_RUN_DIR/phase-notifications.log"
+    export OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_MODELS_FETCH=true
+    unset SKILLOPT_LITE_TARGET_MODEL TARGET_OPENAI_COMPATIBLE_MODEL OPTIMIZER_OPENAI_COMPATIBLE_MODEL
+    unset TARGET_OPENAI_COMPATIBLE_BASE_URL OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL
+    unset TARGET_OPENAI_COMPATIBLE_API_KEY OPTIMIZER_OPENAI_COMPATIBLE_API_KEY
+    native="$example/workspaces/${OPENAI_COMPATIBLE_MODEL//\//-}"
+    for path in "$native" "$example/workspace"; do
+        if [[ -e "$path" || -L "$path" ]]; then echo "Existing Lite workspace: $path" >&2; exit 1; fi
+    done
+    if tmux -L "$name" list-sessions >/dev/null 2>&1; then echo "tmux server already active: $name" >&2; exit 1; fi
+    mkdir -p "$(dirname "$LITE_RUN_DIR")"
+    mkdir "$LITE_RUN_DIR"
+    ln -s "$native" "$LITE_RUN_DIR/workspace"
+    tmux -L "$name" -f /dev/null new-session -d -s "$name" -c "$example" bash -c '
+        set -o pipefail
+        {
+            date -Is
+            git rev-parse HEAD
+            opencode --version
+            "$SKILLOPT_LITE_PYTHON" -B -u opencode_loop.py --rounds 3 --batch 20
+        } 2>&1 | tee "$LITE_RUN_DIR/console.log"
+        rc=$?
+        printf "%s\n" "$rc" > "$LITE_RUN_DIR/exit_code"
+        exit "$rc"
+    '
+)
+```
+
+Attach with `tmux -L sq-original-skillopt-lite attach -t sq-original-skillopt-lite`. The console log and exit code are in `$HOME/searchqa-original-runs/20261124-r1/skillopt-lite/`. Its `workspace` link points to the native skills, round history, and per-split outputs under `.skillopt/_eval_run/`.
+
 ## Roadmap / TODO
 
 - [ ] **Agent-agnostic loop runner.** A drop-in script that wraps `/skillopt-loop`
