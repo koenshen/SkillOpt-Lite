@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Evaluate a Lite skill on SkillOpt's fixed SearchQA split.
+# Evaluate a Lite skill on the selected fixed benchmark split.
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python_bin="${SKILLOPT_LITE_PYTHON:-python3}"
@@ -21,4 +21,4 @@ if [[ -z "${SKILLOPT_AUTH_MODE:-}" && -n "${TARGET_OPENAI_COMPATIBLE_BASE_URL:-$
 fi
 source "${script_dir}/../env.sh" >/dev/null
 "${python_bin}" "${script_dir}/fixed_searchqa.py" "$@"
-notify_done "SearchQA evaluation finished"
+notify_done "Fixed benchmark evaluation finished"

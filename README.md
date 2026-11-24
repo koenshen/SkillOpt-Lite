@@ -164,6 +164,8 @@ in [docs/authentication.md](docs/authentication.md).
 
 ---
 
+The [fixed benchmark runner](copilot_example/searchqa/README.md#fixed-triviaqa-hotpotqa-and-bird) also supports TriviaQA, HotpotQA and BIRD with isolated per-run workspaces.
+
 ## Fixed SearchQA on the CPU server
 
 This original run uses runtime commit `9703dc25aa8be0b09c50b4e54fdb6feaa4b113a5`, OpenCode, and the native three-round loop with a training batch of 20. Each round draws from the fixed 400 training items. The gate uses all 200 dev items and the final test uses 1,400. Both model roles use the same deployment and a 131072-token output cap. The answering pool has 24 workers.

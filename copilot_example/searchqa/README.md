@@ -116,3 +116,27 @@ The `/skillopt-loop` does **not** use `reflect.py` / `analyst_*.md`.
 Reflect, aggregate, and rewrite are all collapsed into a single Copilot
 coding-agent call that reads the failed sample files directly. Those files
 are kept here only as reference for what the old multi-step pipeline did.
+
+
+## Fixed TriviaQA, HotpotQA and BIRD
+
+The existing phase runner and OpenCode loop accept `--benchmark`; omitting it selects SearchQA. Each new benchmark uses its own seed skill, sample export and isolated workspace. The native loop still defaults to three rounds of 20 training samples, full dev gates and one complete test after restoring the best skill. The model deployment, worker and output budget environment settings are the same as for SearchQA above. Supply a fresh output directory for each host invocation.
+
+| Benchmark | Train / dev / test | Task input and scoring |
+|---|---|---|
+| `triviaqa` | 1600 / 200 / 1000 | Released context and question, maximum EM and token F1 over the supplied aliases |
+| `hotpotqa` | 1600 / 200 / 1000 | Supplied distractor passages and question, answer EM and token F1 |
+| `bird` | 834 / 200 / 500 | Full supplied SQL prompt, binary execution accuracy for both hard and soft scores |
+
+From this directory, an offline manifest check and an example full run are:
+
+```bash
+bash run.sh --benchmark triviaqa --check-data
+bash run.sh --benchmark hotpotqa --check-data
+bash run.sh --benchmark bird --check-data
+python3 opencode_loop.py --benchmark bird --rounds 3 --batch 20 --run-dir "$HOME/fixed-runs/lite-bird-01"
+```
+
+The CPU defaults are `/mnt/sdd3/xuancheng/code/github/SkillOpt/data/<benchmark>_split` and `/mnt/sdd3/xuancheng/code/github/bird-text-to-sql-260820/data_dev/dev_databases`. Override data via `TRIVIAQA_SPLIT_DIR`, `HOTPOTQA_SPLIT_DIR`, `BIRD_SPLIT_DIR` or `BIRD_DB_ROOT` before host launch. A direct phase also accepts `--split_dir` and `--db-root`. The BIRD checker verifies the ID order and the presence of each required SQLite file. Prediction and gold SQL are executed by the grader on a read-only connection under one 30-second deadline. The result-row sets determine EX, and SQL errors/timeouts score zero.
+
+Each phase writes `results.jsonl` and `eval_summary.json` below `<run-dir>/workspace/.skillopt/_eval_run/`. For BIRD, `agent_ok` records whether the model returned, while `exec_status`, `predicted_sql`, `fail_reason` and the per-item trace describe SQL execution. Only training phases export optimizer feedback examples.

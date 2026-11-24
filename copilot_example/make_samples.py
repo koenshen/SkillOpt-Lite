@@ -74,7 +74,10 @@ def _input_field(row: dict, env: str) -> str:
         for k in ("task", "goal", "task_description", "instruction"):
             if row.get(k):
                 return str(row[k])
-    if env == "searchqa":
+    if env == "bird":
+        return (f"Database: {row['db_id']}\nQuestion: {row['question']}\n"
+                f"Evidence: {row.get('evidence', '')}\n\n{row['prompt']}")
+    if env in ("searchqa", "triviaqa", "hotpotqa"):
         q = row.get("question", "")
         ctx = row.get("context") or row.get("passages") or ""
         if ctx:
@@ -245,7 +248,7 @@ def row_to_md(row: dict, env: str, results_path: Path | None = None) -> tuple[st
         _truncate(_output_field(row), 4000),
     ]
     trace = _trace_field(row)
-    if not trace and env in ("spreadsheetbench", "officeqa") and results_path is not None:
+    if not trace and env in ("spreadsheetbench", "officeqa", "bird") and results_path is not None:
         trace = _spreadsheet_trace(row, results_path)
     if trace:
         body += [
@@ -269,7 +272,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True, help="Path to results.jsonl")
     ap.add_argument("--workspace", required=True, help="Target workspace root")
-    ap.add_argument("--env", required=True, choices=["livemath", "searchqa", "alfworld", "spreadsheetbench", "officeqa", "docvqa"])
+    ap.add_argument("--env", required=True, choices=["livemath", "searchqa", "triviaqa", "hotpotqa", "bird", "alfworld", "spreadsheetbench", "officeqa", "docvqa"])
     ap.add_argument("--limit", type=int, default=0, help="Max samples (0=all)")
     ap.add_argument("--only", choices=["failed", "passed", "both"], default="both")
     args = ap.parse_args()

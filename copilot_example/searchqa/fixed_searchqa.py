@@ -1,6 +1,5 @@
-"""Run one SkillOpt-Lite SearchQA phase against the fixed SkillOpt manifests."""
+"""Run a Lite train, dev or test phase on a fixed QA or text-to-SQL benchmark."""
 import argparse
-import hashlib
 import json
 import os
 import random
@@ -11,41 +10,21 @@ import tempfile
 from pathlib import Path
 
 if __package__:
+    from .fixed_benchmarks import DEFAULT_DB_ROOT, SPLITS, check_databases, load_splits
     from .dev_gate import add_dev_options, evaluate_round
 else:
+    from fixed_benchmarks import DEFAULT_DB_ROOT, SPLITS, check_databases, load_splits
     from dev_gate import add_dev_options, evaluate_round
 
 ENV_DIR = Path(__file__).resolve().parent
 LITE_ROOT = ENV_DIR.parents[1]
-FIXED_SPLITS = {
-    "train": (400, "cded018312f19f27e1da3e019931fb4d18fbbdbc4fd6d1651b5a52f29dedd268"),
-    "val": (200, "d2913aff1ba10bd9a577e79c24121108218b30136c0d5a7002eed36133babafe"),
-    "test": (1400, "7fca98256e96c837eee2612da9b9d29fb9d4e5cb908c751ca9bfdfd2d10ab6fb"),
-}
-
-
-def load_splits(split_dir):
-    data = Path(split_dir or os.getenv("SEARCHQA_SPLIT_DIR") or LITE_ROOT.parent / "SkillOpt/data/searchqa_split")
-    splits = {}
-    for name, (size, fingerprint) in FIXED_SPLITS.items():
-        path = data / name / "items.json"
-        rows = json.loads(path.read_text(encoding="utf-8"))
-        ids = [row["id"] for row in rows]
-        digest = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
-        if len(rows) != size or digest != fingerprint:
-            raise ValueError(f"{path} must contain the {size} fixed SearchQA IDs in manifest order")
-        for row in rows:
-            if not all(isinstance(row.get(k), str) and row[k].strip() for k in ("question", "context")):
-                raise ValueError(f"Missing question or context for {name}/{row['id']}")
-            golds = row.get("answers")
-            if not isinstance(golds, list) or not golds or not all(isinstance(g, str) for g in golds):
-                raise ValueError(f"Missing reference answers for {name}/{row['id']}")
-        splits[name] = rows
-    return splits
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--benchmark", choices=tuple(SPLITS), default="searchqa")
+    parser.add_argument("--db-root", type=Path, default=os.getenv("BIRD_DB_ROOT", str(DEFAULT_DB_ROOT)),
+                        help="Root of the BIRD SQLite databases")
     parser.add_argument("--check-data", action="store_true", help="Verify all manifest IDs without model calls")
     parser.add_argument("--skill", type=Path, help="Current skill (default: workspace/skill.md)")
     parser.add_argument("--workspace", type=Path, help="Override the model-specific workspace")
@@ -61,7 +40,7 @@ def parse_args():
     parser.add_argument("--max_completion_tokens", type=int,
                         help="Answer budget, limited by the configured target cap")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--split_dir", type=Path, help="Materialized SkillOpt SearchQA split directory")
+    parser.add_argument("--split_dir", type=Path, help="Materialized split directory for the selected benchmark")
     add_dev_options(parser)
     parser.add_argument("--dev-round", type=int, help="Mild dev gate: 0 for initial validation, 1+ for candidates")
     args = parser.parse_args()
@@ -107,14 +86,29 @@ def prepare_workspace(args):
     default_workspace = ENV_DIR / "workspaces" / short_name
     if args.dev_early_stop:
         default_workspace = ENV_DIR / "workspaces" / f"{short_name}-dev-{args.dev_order}-b{args.dev_batch_size}"
+    if args.benchmark != "searchqa":
+        default_workspace = default_workspace.parent / args.benchmark / default_workspace.name
     workspace = (args.workspace or default_workspace).resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    marker = workspace / ".benchmark"
+    if marker.exists() and marker.read_text().strip() != args.benchmark:
+        raise ValueError(f"Workspace belongs to another benchmark: {workspace}")
+    if args.benchmark != "searchqa" and not marker.exists():
+        if any(workspace.iterdir()):
+            raise ValueError(f"Use an empty workspace for a new {args.benchmark} run: {workspace}")
+        marker.write_text(args.benchmark + "\n", encoding="utf-8")
     for directory in ("history", "samples/passed", "samples/failed", "_eval_run"):
         (workspace / ".skillopt" / directory).mkdir(parents=True, exist_ok=True)
     local_skill = workspace / "skill.md"
     if not local_skill.exists():
-        shutil.copyfile(ENV_DIR / "skills/initial.md", local_skill)
+        seed_dir = ENV_DIR / "skills"
+        if args.benchmark != "searchqa":
+            seed_dir = seed_dir / args.benchmark
+        shutil.copyfile(seed_dir / "initial.md", local_skill)
     link = ENV_DIR / "workspace"
-    if not args.dev_early_stop and link.resolve() != workspace:
+    publish_link = (args.benchmark == "searchqa" and not args.dev_early_stop
+                    and os.environ.get("SKILLOPT_LITE_ISOLATED_LOOP") != "1")
+    if publish_link and link.resolve() != workspace:
         if link.is_symlink():
             link.unlink()
         link.symlink_to(workspace, target_is_directory=True)
@@ -138,6 +132,10 @@ def run_evaluation(rows, args, skill_path, out):
     skill = skill_path.read_text(encoding="utf-8")
 
     def rollout(batch):
+        if args.benchmark == "bird":
+            from skillopt.envs.bird.rollout import run_batch as bird_batch
+            return bird_batch(batch, str(out), skill, str(args.db_root), workers=args.workers,
+                              max_completion_tokens=answer_budget)
         return run_batch(
             batch, str(out), skill, workers=args.workers,
             max_turns=config["max_turns"], max_completion_tokens=answer_budget,
@@ -151,9 +149,10 @@ def run_evaluation(rows, args, skill_path, out):
                         workers=args.workers)
         summary = evaluate_round(rows, out, args.dev_round, settings, skill, rollout, get_token_summary)
         if summary["stopped"]:
+            metric = "EX" if args.benchmark == "bird" else "EM"
             print(f"Gate: reject (certified), evaluated={summary['n_evaluated']}/{summary['n_total']}, "
-                  f"EM interval=[{summary['lower_bound']:.4f}, {summary['upper_bound']:.4f}], "
-                  "full EM and F1 unmeasured", flush=True)
+                  f"{metric} interval=[{summary['lower_bound']:.4f}, {summary['upper_bound']:.4f}], "
+                  "full score unmeasured", flush=True)
         else:
             print(f"Results: hard={summary['hard']:.4f}  soft={summary['soft']:.4f}  "
                   f"(n={summary['n_total']})\nGate: {summary['action']}", flush=True)
@@ -165,11 +164,14 @@ def run_evaluation(rows, args, skill_path, out):
     if len(results) != len(ids) or set(by_id) != set(ids):
         raise RuntimeError(f"Incomplete or duplicate {args.split} results in {out}")
     if not any(row.get("agent_ok") for row in results):
-        raise RuntimeError(f"All {len(rows)} SearchQA requests failed; see {out / 'results.jsonl'}")
+        raise RuntimeError(f"All {len(rows)} {args.benchmark} requests failed; see {out / 'results.jsonl'}")
     hard, soft = compute_score(results)
     summary = dict(split=args.split, skill=str(skill_path), n_items=len(rows), hard=hard, soft=soft,
                    target_model=args.target_model, seed=args.seed, workers=args.workers,
                    max_completion_tokens=answer_budget, token_usage=get_token_summary())
+    if args.benchmark != "searchqa":
+        summary["benchmark"] = args.benchmark
+        summary["metric"] = "EX" if args.benchmark == "bird" else "EM/F1"
     (out / "eval_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"Results: hard={hard:.4f}  soft={soft:.4f}  (n={len(rows)})", flush=True)
     return [by_id[i] for i in ids]
@@ -177,9 +179,11 @@ def run_evaluation(rows, args, skill_path, out):
 
 def main():
     args = parse_args()
-    splits = load_splits(args.split_dir)
+    splits = load_splits(args.split_dir, args.benchmark)
+    if args.benchmark == "bird":
+        check_databases(splits, args.db_root)
     if args.check_data:
-        print("Fixed SearchQA IDs verified:", ", ".join(f"{s}={len(rows)}" for s, rows in splits.items()))
+        print(f"Fixed {args.benchmark} IDs verified:", ", ".join(f"{s}={len(rows)}" for s, rows in splits.items()))
         return
     rows = splits[args.split]
     if args.split == "train" and 0 < args.eval_limit < len(rows):
@@ -198,12 +202,17 @@ def main():
         feedback_file = out / "train_feedback.jsonl"
         with feedback_file.open("w", encoding="utf-8") as feedback:
             for item, result in zip(rows, results, strict=True):
-                row = dict(result, question=item["question"], context=item["context"],
-                           correct_text=" | ".join(item["answers"]), predicted_text=result["response"])
+                if args.benchmark == "bird":
+                    row = dict(result, question=item["question"], prompt=item["prompt"], db_id=item["db_id"],
+                               evidence=item.get("evidence", ""), correct_text=item["SQL"],
+                               predicted_text=result.get("predicted_sql", "") or result["response"])
+                else:
+                    row = dict(result, question=item["question"], context=item["context"],
+                               correct_text=" | ".join(item["answers"]), predicted_text=result["response"])
                 feedback.write(json.dumps(row, ensure_ascii=False) + "\n")
         subprocess.run([sys.executable, str(ENV_DIR.parent / "make_samples.py"),
                         "--results", str(feedback_file), "--workspace", str(workspace),
-                        "--env", "searchqa", "--limit", str(args.limit)], check=True)
+                        "--env", args.benchmark, "--limit", str(args.limit)], check=True)
     print(f"Workspace: {workspace}\nEvaluation: {out}")
 
 

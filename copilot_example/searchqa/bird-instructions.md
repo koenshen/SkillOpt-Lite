@@ -1,0 +1,5 @@
+# BIRD training workspace
+
+Run the native Lite loop from this directory. Its phase runner writes the current skill and samples to `workspace/`. The target sees the current skill and the complete materialized BIRD prompt, including its provided database schema, evidence and question. Each answer is a single SQL generation. Only the evaluator executes SQL, on the fixed read-only SQLite database for that question.
+
+Both `hard` and `soft` are binary execution accuracy (EX). Inspect failed training samples under `workspace/.skillopt/samples/failed/` and compare a few passed samples. Use the question, evidence, model SQL, expected SQL, execution diagnostics and available row previews to find recurrent join, filter, grouping, ordering or SQL syntax errors. Improve `workspace/skill.md` using reusable SQL guidance and the existing snapshot and rollback rules. Keep literals and identifiers case-sensitive. The full dev set decides which skill to retain. The final test is evaluated once after restoring the best snapshot.
