@@ -257,6 +257,7 @@ def main():
     if isolated:
         prompt, cwd = isolated_loop(prompt, args)
         env["SKILLOPT_LITE_ISOLATED_LOOP"] = "1"
+        (cwd / "workspace/.skillopt/phase-logs").mkdir(exist_ok=True)
         # The copy of fixed_benchmarks.py now lives under the isolated runtime.
         # Resolve source-checkout defaults before invoking it in the new cwd.
         env.setdefault(f"{args.benchmark.upper()}_SPLIT_DIR",
@@ -276,6 +277,15 @@ def main():
         "for that same command to finish and continue the loop. "
         "Resolve the improve prompt at .github/prompts/skillopt-improve.prompt.md.\n"
     )
+    if isolated:
+        prompt += (
+            "Keep all command logs, exit markers and temporary files under the existing relative "
+            "directory workspace/.skillopt/phase-logs/. For a long phase, use this shell pattern "
+            "with the actual phase arguments and a unique round/phase label: "
+            "(bash run.sh ARGUMENTS; echo $? > workspace/.skillopt/phase-logs/LABEL.exit) "
+            "</dev/null > workspace/.skillopt/phase-logs/LABEL.log 2>&1 &\n"
+            "Read that same local exit marker and log. The system /tmp directory is outside this workspace.\n"
+        )
     env["PWD"] = str(cwd)
     argv = ["opencode", "run", "--dir", str(cwd), "--pure", "--agent", "build", "--model", selected, prompt]
     if isolated:

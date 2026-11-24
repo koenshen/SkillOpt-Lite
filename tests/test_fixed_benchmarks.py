@@ -132,6 +132,8 @@ class FixedBenchmarks(unittest.TestCase):
                 self.assertEqual((run_dir / "skills/initial.md").read_bytes(),
                                  (run_dir / "workspace/skill.md").read_bytes())
                 self.assertTrue((run_dir / "workspace/.skillopt/samples/failed").is_dir())
+                self.assertTrue((run_dir / "workspace/.skillopt/phase-logs").is_dir())
+                self.assertIn("workspace/.skillopt/phase-logs/LABEL.log", cmd[-1])
                 self.assertNotIn(str(runner.ENV_DIR), (run_dir / "run.sh").read_text())
                 self.assertTrue((run_dir / "runtime/copilot_example/searchqa/fixed_searchqa.py").is_file())
                 self.assertFalse(list(run_dir.rglob(".env")))
