@@ -19,13 +19,34 @@ def write_json(path, value):
     temp.replace(path)
 
 
-def _results(path):
+def _results(path, *, resume=False):
     if not path.exists():
         return {}
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    by_id = {row["id"]: row for row in rows}
-    if len(by_id) != len(rows):
-        raise ValueError(f"Duplicate dev result IDs in {path}")
+    by_id = {}
+    with path.open("r+b" if resume else "rb") as stream:
+        while True:
+            offset = stream.tell()
+            line = stream.readline()
+            if not line:
+                break
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                # Only the unterminated tail of the currently open round can
+                # be an interrupted append. Completed records must still parse.
+                if not resume or line.endswith(b"\n"):
+                    raise
+                stream.truncate(offset)
+                print(f"Recovering interrupted dev append at byte {offset} in {path}", flush=True)
+                break
+            item_id = row["id"]
+            if item_id in by_id:
+                raise ValueError(f"Duplicate dev result ID {item_id} in {path}")
+            by_id[item_id] = row
+            if resume and not line.endswith(b"\n"):
+                stream.write(b"\n")  # Keep a complete last answer separate from the next append.
     return by_id
 
 
@@ -82,7 +103,7 @@ def evaluate_round(rows, out, round_idx, settings, skill, run_items, get_usage):
 
         summary_path = out / "eval_summary.json"
         result_file = out / "results.jsonl"
-        existing = _results(result_file)
+        existing = _results(result_file, resume=not summary_path.exists())
         if not set(existing) <= set(by_id):
             raise ValueError(f"Unexpected dev item IDs in {out}")
         if summary_path.exists():

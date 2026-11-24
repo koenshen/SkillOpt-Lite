@@ -81,6 +81,52 @@ class GateTests(unittest.TestCase):
         self.assertEqual(summary["n_evaluated"], 200)
         self.assertFalse(summary["token_usage_complete"])
 
+    def interrupted_round_results(self):
+        self.run_round(0, range(42))
+        with self.assertRaises(InterruptedError):
+            self.run_round(1, range(44), crash_after=6)
+        return self.root / "hard-first/val_round_0001/results.jsonl"
+
+    def test_resume_incomplete_utf8_tail(self):
+        path = self.interrupted_round_results()
+        complete = path.read_bytes().splitlines(keepends=True)[:-1]
+        path.write_bytes(b"".join(complete) + b'{"id":"5","text":"' + "题".encode()[:2])
+        summary, calls = self.run_round(1, range(44))
+        self.assertEqual(calls[0], ["5", "6", "7"])
+        self.assertEqual(summary["n_evaluated"], 44)
+        self.assertEqual(len(path.read_text().splitlines()), 44)
+
+    def test_resume_incomplete_json_tail_after_a_complete_row(self):
+        path = self.interrupted_round_results()
+        with path.open("ab") as f:
+            f.write(b'{"id":"6","soft":')
+        summary, calls = self.run_round(1, range(44))
+        self.assertEqual(calls[0], ["6", "7"])
+        self.assertEqual(len(path.read_text().splitlines()), summary["n_evaluated"])
+
+    def test_resume_keeps_valid_last_line_without_newline(self):
+        path = self.interrupted_round_results()
+        path.write_bytes(path.read_bytes().rstrip(b"\n"))
+        _, calls = self.run_round(1, range(44))
+        self.assertEqual(calls[0], ["6", "7"])
+        self.assertEqual([r["id"] for r in map(json.loads, path.read_text().splitlines())],
+                         [str(i) for i in range(44)])
+
+    def test_only_unfinished_unterminated_tail_is_repairable(self):
+        path = self.interrupted_round_results()
+        original = path.read_bytes()
+        for broken in (original + b'{"id":\n', b'{"id":\n' + original):
+            path.write_bytes(broken)
+            with self.assertRaises(json.JSONDecodeError):
+                self.run_round(1, range(44))
+            self.assertEqual(path.read_bytes(), broken)
+        baseline = path.parent.parent / "val_round_0000/results.jsonl"
+        broken = baseline.read_bytes() + b'{"id":'
+        baseline.write_bytes(broken)
+        with self.assertRaises(json.JSONDecodeError):
+            self.run_round(0, range(42))
+        self.assertEqual(baseline.read_bytes(), broken)
+
     def test_early_transport_errors_do_not_mask_total_outage(self):
         self.run_round(0, range(0))
         s, _ = self.run_round(1, range(200), errors=range(4))
