@@ -120,6 +120,8 @@ are kept here only as reference for what the old multi-step pipeline did.
 
 ## Fixed TriviaQA, HotpotQA and BIRD
 
+The OpenCode optimizer runs in the new host directory with an explicit working directory for its tools. An isolated run succeeds only after its held-out summary and all fixed test IDs have been verified.
+
 The existing phase runner and OpenCode loop accept `--benchmark`; omitting it selects SearchQA. Each new benchmark uses its own seed skill, sample export and isolated workspace. The native loop still defaults to three rounds of 20 training samples, full dev gates and one complete test after restoring the best skill. The model deployment, worker and output budget environment settings are the same as for SearchQA above. Supply a fresh output directory for each host invocation.
 
 | Benchmark | Train / dev / test | Task input and scoring |

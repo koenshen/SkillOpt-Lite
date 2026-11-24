@@ -84,6 +84,26 @@ class FixedBenchmarks(unittest.TestCase):
                 failure = evaluate(sql, "SELECT 1", self.db)
                 self.assertEqual((failure["res"], failure["status"]), (0, "error"))
 
+    def test_host_requires_complete_heldout_test_even_on_zero_exit(self):
+        with patch.object(opencode_loop.subprocess, "run") as child:
+            with self.assertRaisesRegex(RuntimeError, "without complete hotpotqa test"):
+                opencode_loop.run_isolated_host(["opencode"], self.root, {}, "hotpotqa")
+            child.assert_called_once_with(["opencode"], cwd=self.root, env={}, check=True)
+
+        ids = ["a", "b"]
+        output = self.root / "workspace/.skillopt/_eval_run/test_mock"
+        output.mkdir(parents=True)
+        (output / "eval_summary.json").write_text(json.dumps(dict(split="test", benchmark="hotpotqa", n_items=2)))
+        (output / "item_ids.json").write_text(json.dumps(ids))
+        digest = hashlib.sha256("\n".join(ids).encode()).hexdigest()
+        with patch.dict(tasks.SPLITS, {"hotpotqa": {"test": (2, digest)}}):
+            results = output / "results.jsonl"
+            results.write_text(json.dumps(dict(id="a", agent_ok=True)) + "\n")
+            with self.assertRaisesRegex(RuntimeError, "without complete"):
+                opencode_loop.verify_test(self.root, "hotpotqa")
+            results.write_text("".join(json.dumps(dict(id=i, agent_ok=True)) + "\n" for i in reversed(ids)))
+            opencode_loop.verify_test(self.root, "hotpotqa")
+
     def test_new_task_host_and_phase_commands(self):
         original_cwd = Path.cwd()
         self.addCleanup(os.chdir, original_cwd)
@@ -93,10 +113,12 @@ class FixedBenchmarks(unittest.TestCase):
                 argv = ["opencode_loop.py", "--benchmark", benchmark, "--run-dir", str(run_dir)]
                 env = {"OPENAI_COMPATIBLE_MODEL": "fake/model", "OPENAI_COMPATIBLE_API_KEY": "dummy",
                        "OPENAI_COMPATIBLE_BASE_URL": "https://example.invalid/v1"}
-                with patch.dict(os.environ, env), patch.object(sys, "argv", argv), patch.object(os, "execvpe") as host:
+                with patch.dict(os.environ, env), patch.object(sys, "argv", argv), patch.object(opencode_loop, "run_isolated_host") as host:
                     opencode_loop.main()
-                self.assertEqual(Path.cwd(), run_dir)
-                prompt = host.call_args.args[1][-1]
+                cmd, cwd, child_env, task = host.call_args.args
+                self.assertEqual((cwd, child_env["PWD"], cmd[cmd.index("--dir") + 1]), (run_dir, str(run_dir), str(run_dir)))
+                self.assertTrue((run_dir / "skills/initial.md").is_file())
+                prompt = cmd[-1]
                 self.assertIn(f"full ({tasks.SPLITS[benchmark]['test'][0]})", prompt)
                 self.assertNotIn("1400", prompt)
                 self.assertNotIn("--dev-round", prompt)

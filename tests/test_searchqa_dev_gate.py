@@ -142,10 +142,12 @@ class GateTests(unittest.TestCase):
         argv = ["opencode_loop.py", "--dev-early-stop", "--dev-run-dir", str(run_dir)]
         env = {"OPENAI_COMPATIBLE_MODEL":"mock/model", "OPENAI_COMPATIBLE_API_KEY":"fake",
                "OPENAI_COMPATIBLE_BASE_URL":"https://example.invalid/v1"}
-        with patch.dict(os.environ, env), patch.object(sys, "argv", argv), patch.object(os, "execvpe") as host:
+        with patch.dict(os.environ, env), patch.object(sys, "argv", argv), patch.object(opencode_loop, "run_isolated_host") as host:
             opencode_loop.main()
-        self.assertEqual(Path.cwd(), run_dir)
-        prompt = host.call_args.args[1][-1]
+        cmd, cwd, child_env, task = host.call_args.args
+        self.assertEqual((cwd, child_env["PWD"], cmd[cmd.index("--dir") + 1]), (run_dir, str(run_dir), str(run_dir)))
+        self.assertTrue((run_dir / "skills/initial.md").is_file())
+        prompt = cmd[-1]
         self.assertIn("--dev-round 0", prompt)
         self.assertIn('--dev-round "$r"', prompt)
         self.assertIn("normal rollback", prompt)

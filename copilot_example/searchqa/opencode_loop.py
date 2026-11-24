@@ -1,9 +1,11 @@
 """Run the original Lite skillopt-loop prompt with an OpenAI-compatible OpenCode optimizer."""
 import argparse
+import hashlib
 import json
 import os
 import shlex
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -60,6 +62,11 @@ def isolated_loop(prompt, args):
         root.mkdir(exist_ok=True)
         run_dir = Path(tempfile.mkdtemp(prefix=f"{args.benchmark}-{args.dev_order if args.dev_early_stop else 'full'}-", dir=root))
     shutil.copytree(ENV_DIR / ".github", run_dir / ".github")
+    seed = ENV_DIR / "skills"
+    if args.benchmark != "searchqa":
+        seed = seed / args.benchmark
+    (run_dir / "skills").mkdir()
+    shutil.copyfile(seed / "initial.md", run_dir / "skills/initial.md")
     wrapper = run_dir / "run.sh"
     phase_command = ["bash", str(ENV_DIR / "run.sh"), "--benchmark", args.benchmark,
                      "--workspace", str(run_dir / "workspace")]
@@ -108,6 +115,33 @@ def isolated_loop(prompt, args):
     improve.write_text(improve_text, encoding="utf-8")
     print(f"Lite {args.benchmark} loop directory: {run_dir}", flush=True)
     return prompt, run_dir
+
+
+def verify_test(run_dir, benchmark):
+    """The OpenCode CLI may exit successfully without finishing the requested loop."""
+    expected_count, expected_digest = SPLITS[benchmark]["test"]
+    eval_root = run_dir / "workspace/.skillopt/_eval_run"
+    for path in sorted(eval_root.glob("test_*/eval_summary.json")):
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        if summary.get("split") != "test" or summary.get("n_items") != expected_count:
+            continue
+        if summary.get("benchmark", "searchqa") != benchmark:
+            continue
+        ids = json.loads(path.with_name("item_ids.json").read_text(encoding="utf-8"))
+        if hashlib.sha256("\n".join(ids).encode()).hexdigest() != expected_digest:
+            continue
+        with path.with_name("results.jsonl").open(encoding="utf-8") as stream:
+            results = [json.loads(line) for line in stream if line.strip()]
+        if len(results) == expected_count and {row["id"] for row in results} == set(ids) and any(
+            row.get("agent_ok") for row in results
+        ):
+            return
+    raise RuntimeError(f"OpenCode exited without complete {benchmark} test results in {eval_root}")
+
+
+def run_isolated_host(argv, cwd, env, benchmark):
+    subprocess.run(argv, cwd=cwd, env=env, check=True)
+    verify_test(cwd, benchmark)
 
 
 def main():
@@ -159,9 +193,13 @@ def main():
     prompt = prompt_file.read_text(encoding="utf-8").split("---\n", 2)[2]
     prompt = prompt.replace("${input:rounds:3}", str(args.rounds)).replace("${input:batch:20}", str(args.batch))
     cwd = ENV_DIR
-    if args.dev_early_stop or args.benchmark != "searchqa" or args.dev_run_dir:
+    isolated = args.dev_early_stop or args.benchmark != "searchqa" or args.dev_run_dir
+    if isolated:
         prompt, cwd = isolated_loop(prompt, args)
         env["SKILLOPT_LITE_ISOLATED_LOOP"] = "1"
+        prompt = (f"Your run directory is {cwd}. Run all commands from this directory. "
+                  "Use its ./run.sh, .github/prompts/ and workspace/ directly. "
+                  "Begin with the round-0 validation in Setup below.\n\n" + prompt)
     prompt += (
         "\n\nOpenCode host: use read/edit/bash for the corresponding tools in this prompt. "
         "OpenCode returns shell results directly. For long evaluations, start the command once "
@@ -169,8 +207,13 @@ def main():
         "for that same command to finish and continue the loop. "
         "Resolve the improve prompt at .github/prompts/skillopt-improve.prompt.md.\n"
     )
-    os.chdir(cwd)
-    os.execvpe("opencode", ["opencode", "run", "--pure", "--agent", "build", "--model", selected, prompt], env)
+    env["PWD"] = str(cwd)
+    argv = ["opencode", "run", "--dir", str(cwd), "--pure", "--agent", "build", "--model", selected, prompt]
+    if isolated:
+        run_isolated_host(argv, cwd, env, args.benchmark)
+    else:
+        os.chdir(cwd)
+        os.execvpe("opencode", argv, env)
 
 
 if __name__ == "__main__":
