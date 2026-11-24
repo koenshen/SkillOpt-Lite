@@ -10,6 +10,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+if __package__:
+    from .dev_gate import add_dev_options, evaluate_round
+else:
+    from dev_gate import add_dev_options, evaluate_round
+
 ENV_DIR = Path(__file__).resolve().parent
 LITE_ROOT = ENV_DIR.parents[1]
 FIXED_SPLITS = {
@@ -57,7 +62,15 @@ def parse_args():
                         help="Answer budget, limited by the configured target cap")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--split_dir", type=Path, help="Materialized SkillOpt SearchQA split directory")
+    add_dev_options(parser)
+    parser.add_argument("--dev-round", type=int, help="Mild dev gate: 0 for initial validation, 1+ for candidates")
     args = parser.parse_args()
+    if args.dev_batch_size < 1:
+        parser.error("dev batch size must be positive")
+    if args.dev_round is not None and (not args.dev_early_stop or args.dev_round < 0 or args.split != "val"):
+        parser.error("--dev-round requires --dev-early-stop, --split val and a nonnegative round")
+    if args.dev_early_stop and args.split == "val" and args.dev_round is None and not args.check_data:
+        parser.error("specify --dev-round 0 for the initial dev or the candidate's round number")
     if args.limit < 0 or args.eval_limit < 0 or args.workers < 1:
         parser.error("limits must be nonnegative and workers must be positive")
     cap = os.getenv("TARGET_OPENAI_COMPATIBLE_MAX_TOKENS") or os.getenv("OPENAI_COMPATIBLE_MAX_TOKENS")
@@ -91,14 +104,17 @@ def prepare_workspace(args):
     short_name = model_short_name(args.target_model)
     if short_name in {"", ".", ".."}:
         raise ValueError("expected a non-empty model name")
-    workspace = (args.workspace or ENV_DIR / "workspaces" / short_name).resolve()
+    default_workspace = ENV_DIR / "workspaces" / short_name
+    if args.dev_early_stop:
+        default_workspace = ENV_DIR / "workspaces" / f"{short_name}-dev-{args.dev_order}-b{args.dev_batch_size}"
+    workspace = (args.workspace or default_workspace).resolve()
     for directory in ("history", "samples/passed", "samples/failed", "_eval_run"):
         (workspace / ".skillopt" / directory).mkdir(parents=True, exist_ok=True)
     local_skill = workspace / "skill.md"
     if not local_skill.exists():
         shutil.copyfile(ENV_DIR / "skills/initial.md", local_skill)
     link = ENV_DIR / "workspace"
-    if link.resolve() != workspace:
+    if not args.dev_early_stop and link.resolve() != workspace:
         if link.is_symlink():
             link.unlink()
         link.symlink_to(workspace, target_is_directory=True)
@@ -119,13 +135,32 @@ def run_evaluation(rows, args, skill_path, out):
     set_target_backend("openai_chat")
     set_target_deployment(args.target_model)
     set_reasoning_effort(None if args.target_model.startswith("gpt-4o") else args.reasoning)
+    skill = skill_path.read_text(encoding="utf-8")
+
+    def rollout(batch):
+        return run_batch(
+            batch, str(out), skill, workers=args.workers,
+            max_turns=config["max_turns"], max_completion_tokens=answer_budget,
+            exec_timeout=config["exec_timeout"], task_timeout=config["exec_timeout"],
+        )
+
+    if args.dev_early_stop and args.split == "val":
+        settings = dict(order=args.dev_order, batch_size=args.dev_batch_size,
+                        target_model=args.target_model, reasoning=args.reasoning,
+                        max_completion_tokens=answer_budget, max_turns=config["max_turns"],
+                        workers=args.workers)
+        summary = evaluate_round(rows, out, args.dev_round, settings, skill, rollout, get_token_summary)
+        if summary["stopped"]:
+            print(f"Gate: reject (certified), evaluated={summary['n_evaluated']}/{summary['n_total']}, "
+                  f"EM interval=[{summary['lower_bound']:.4f}, {summary['upper_bound']:.4f}], "
+                  "full EM and F1 unmeasured", flush=True)
+        else:
+            print(f"Results: hard={summary['hard']:.4f}  soft={summary['soft']:.4f}  "
+                  f"(n={summary['n_total']})\nGate: {summary['action']}", flush=True)
+        return
     ids = [row["id"] for row in rows]
     (out / "item_ids.json").write_text(json.dumps(ids), encoding="utf-8")
-    results = run_batch(
-        rows, str(out), skill_path.read_text(encoding="utf-8"), workers=args.workers,
-        max_turns=config["max_turns"], max_completion_tokens=answer_budget,
-        exec_timeout=config["exec_timeout"], task_timeout=config["exec_timeout"],
-    )
+    results = rollout(rows)
     by_id = {row["id"]: row for row in results}
     if len(results) != len(ids) or set(by_id) != set(ids):
         raise RuntimeError(f"Incomplete or duplicate {args.split} results in {out}")
@@ -150,7 +185,11 @@ def main():
     if args.split == "train" and 0 < args.eval_limit < len(rows):
         rows = random.Random(args.seed).sample(rows, args.eval_limit)
     workspace, skill_path = prepare_workspace(args)
-    out = Path(tempfile.mkdtemp(prefix=f"{args.split}_", dir=workspace / ".skillopt/_eval_run"))
+    eval_root = workspace / ".skillopt/_eval_run"
+    if args.dev_early_stop and args.split == "val":
+        out = eval_root / f"val_round_{args.dev_round:04d}"
+    else:
+        out = Path(tempfile.mkdtemp(prefix=f"{args.split}_", dir=eval_root))
     results = run_evaluation(rows, args, skill_path, out)
     if skill_path != (workspace / "skill.md").resolve():
         shutil.copyfile(skill_path, workspace / "skill.md")

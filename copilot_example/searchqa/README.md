@@ -75,6 +75,41 @@ OpenCode needs to be on `PATH`; the Python interpreter selected for `run.sh`
 needs Lite's dependencies. On the CPU server the existing environment can be
 selected with `export SKILLOPT_LITE_PYTHON="$HOME/miniconda3/envs/rdagent/bin/python"`.
 
+### Candidate dev early stopping (optional)
+
+From this directory, the original three-round loop supports:
+
+```bash
+python3 opencode_loop.py --rounds 3 --batch 20 --dev-early-stop \
+  --dev-order hard-first --dev-batch-size 4 --dev-run-dir /path/to/new-run
+```
+
+The launcher creates a new working directory containing its own `workspace/`,
+phase runner and improvement instructions. Omit `--dev-run-dir` to allocate a
+fresh folder under `workspaces/`. The host prints the chosen directory. The
+original launcher defaults to full dev. Training and the final 1,400-question
+test follow the native loop in both modes.
+
+Round 0 evaluates all 200 dev items. Later rounds sort the manifest by mean
+observed per-item EM, preserving manifest order on ties. `hard-first` (default)
+evaluates low means first; `easy-first` evaluates high means first. After
+each batch of four new questions the maximum final correct count equals
+the observed correct count plus the number still untested. Lite can certify
+rollback only when even that maximum is at least one EM percentage point
+below the incumbent (two fewer correct on 200). A possible flat or accepted
+candidate needs the full dev, including F1 for the two-point F1 exception.
+
+The phase-runner interface is `bash run.sh --dev-early-stop --split val
+--dev-round 0 --workspace /path/to/workspace` for initialization; use rounds
+1, 2, ... for candidates in the same workspace. The OpenCode launcher supplies
+the options to its child commands. Each gate writes its own
+`.skillopt/_eval_run/val_round_NNNN/` with actual results, evaluated IDs,
+batch bounds, decision and reference scores. A partial reject has null full
+EM/F1. Retrying an identical round reuses recorded items; a conflicting
+candidate/configuration for that round is rejected. If a process died during
+a model batch, `token_usage_complete=false` flags usage the archive could
+not recover. Only observed EM contributes to subsequent difficulty rankings.
+
 ## Notes (vs the old reflect.py)
 
 The `/skillopt-loop` does **not** use `reflect.py` / `analyst_*.md`.
