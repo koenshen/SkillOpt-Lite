@@ -74,6 +74,16 @@ class FixedBenchmarks(unittest.TestCase):
                     "SELECT SUM(n) FROM a")
         self.assertEqual(evaluate(long_sql, self.sql, self.db, timeout=0)["status"], "timeout")
 
+    def test_metadata_queries_are_read_only(self):
+        # Table-valued pragmas are legal SELECT inputs for BIRD SQL.
+        meta = "SELECT name FROM pragma_table_info('cities')"
+        self.assertEqual(evaluate(meta, "SELECT 'name'", self.db)["res"], 1)
+        self.assertEqual(evaluate("PRAGMA compile_options", "PRAGMA compile_options", self.db)["res"], 1)
+        for sql in ("PRAGMA query_only=OFF", "PRAGMA user_version=1", "SELECT load_extension('unused')"):
+            with self.subTest(sql=sql):
+                failure = evaluate(sql, "SELECT 1", self.db)
+                self.assertEqual((failure["res"], failure["status"]), (0, "error"))
+
     def test_new_task_host_and_phase_commands(self):
         original_cwd = Path.cwd()
         self.addCleanup(os.chdir, original_cwd)

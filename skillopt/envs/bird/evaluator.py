@@ -88,7 +88,14 @@ def _connect_read_only(path: str) -> sqlite3.Connection:
 
     # Keep generated SQL confined to this database, including auxiliary/temp databases.
     def authorize(action, arg1, arg2, database, source):
-        if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH, sqlite3.SQLITE_PRAGMA):
+        if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_PRAGMA and (arg1 or "").lower() not in {
+            "table_info", "table_xinfo", "table_list", "index_info", "index_xinfo",
+            "index_list", "foreign_key_list", "database_list", "compile_options",
+        }:
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_FUNCTION and (arg2 or "").lower() in ("load_extension", "writefile"):
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
 
