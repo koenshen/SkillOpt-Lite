@@ -156,8 +156,8 @@ class GateTests(unittest.TestCase):
         self.assertIn('--split test --eval_limit 0', prompt)
         self.assertTrue((run_dir / ".github/prompts/skillopt-improve.prompt.md").is_file())
         import shlex
-        args = shlex.split((run_dir / "run.sh").read_text().splitlines()[1])
-        self.assertEqual(args[:3], ["exec", "bash", str(root/"run.sh")])
+        args = shlex.split((run_dir / "run.sh").read_text().splitlines()[-1])
+        self.assertEqual(args[:3], ["exec", "bash", "runtime/copilot_example/searchqa/run.sh"])
         self.assertEqual(args[args.index("--workspace")+1], str(run_dir/"workspace"))
         synthetic = [{"id":str(i), "question":f"Q{i}?", "context":"given", "answers":["ok"]} for i in range(200)]
         def answer(**kwargs):

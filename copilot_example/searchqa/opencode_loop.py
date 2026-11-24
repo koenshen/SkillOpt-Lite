@@ -7,17 +7,45 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 if __package__:
-    from .fixed_benchmarks import SPLITS
+    from .fixed_benchmarks import DEFAULT_DB_ROOT, SPLITS
+    from .fixed_searchqa import initialize_workspace
     from .dev_gate import add_dev_options
 else:
-    from fixed_benchmarks import SPLITS
+    from fixed_benchmarks import DEFAULT_DB_ROOT, SPLITS
+    from fixed_searchqa import initialize_workspace
     from dev_gate import add_dev_options
 
 
 ENV_DIR = Path(__file__).resolve().parent
+
+
+def copy_phase_runtime(destination):
+    """Pack only tracked sources used by run.sh; exclude local workspaces and credentials."""
+    repo = ENV_DIR.parents[1]
+    paths = [
+        "LICENSE", "env.sh", "copilot_example/env.sh", "copilot_example/make_samples.py",
+        "configs/_base_/default.yaml", "configs/searchqa/default.yaml",
+        "skillopt/__init__.py", "skillopt/types.py", "skillopt/config.py", "skillopt/model",
+        "skillopt/utils", "skillopt/datasets", "skillopt/evaluation", "skillopt/prompts/__init__.py",
+        "skillopt/envs/__init__.py",
+        "skillopt/envs/bird", "skillopt/envs/searchqa/__init__.py", "skillopt/envs/searchqa/evaluator.py",
+        "skillopt/envs/searchqa/rollout.py", "skillopt/envs/searchqa/prompts/rollout_system.md",
+        "copilot_example/searchqa/skills", "copilot_example/searchqa/run.sh",
+        "copilot_example/searchqa/fixed_searchqa.py", "copilot_example/searchqa/fixed_benchmarks.py",
+        "copilot_example/searchqa/dev_gate.py",
+    ]
+    tracked = subprocess.check_output(["git", "-C", str(repo), "ls-files", "-z", "--", *paths])
+    for raw in tracked.rstrip(b"\0").split(b"\0"):
+        name = Path(os.fsdecode(raw))
+        if name.name != "LICENSE" and name.suffix not in {".py", ".sh", ".yaml", ".md"}:
+            continue
+        dest = destination / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(repo / name, dest)
 
 
 def render_task(text, benchmark):
@@ -61,19 +89,25 @@ def isolated_loop(prompt, args):
         root = ENV_DIR / "workspaces"
         root.mkdir(exist_ok=True)
         run_dir = Path(tempfile.mkdtemp(prefix=f"{args.benchmark}-{args.dev_order if args.dev_early_stop else 'full'}-", dir=root))
-    shutil.copytree(ENV_DIR / ".github", run_dir / ".github")
+    for name in ("copilot-instructions.md", "prompts/skillopt-improve.prompt.md", "prompts/skillopt-loop.prompt.md"):
+        target = run_dir / ".github" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ENV_DIR / ".github" / name, target)
     seed = ENV_DIR / "skills"
     if args.benchmark != "searchqa":
         seed = seed / args.benchmark
     (run_dir / "skills").mkdir()
     shutil.copyfile(seed / "initial.md", run_dir / "skills/initial.md")
+    initialize_workspace(run_dir / "workspace", args.benchmark)
+    copy_phase_runtime(run_dir / "runtime")
     wrapper = run_dir / "run.sh"
-    phase_command = ["bash", str(ENV_DIR / "run.sh"), "--benchmark", args.benchmark,
+    phase_command = ["bash", "runtime/copilot_example/searchqa/run.sh", "--benchmark", args.benchmark,
                      "--workspace", str(run_dir / "workspace")]
     if args.dev_early_stop:
         phase_command += ["--dev-early-stop", "--dev-order", args.dev_order,
                           "--dev-batch-size", str(args.dev_batch_size)]
-    wrapper.write_text('#!/usr/bin/env bash\nexec ' + shlex.join(phase_command) + ' "$@"\n', encoding="utf-8")
+    wrapper.write_text('#!/usr/bin/env bash\ncd -- "$(dirname -- "$0")" || exit 1\nexec '
+                       + shlex.join(phase_command) + ' "$@"\n', encoding="utf-8")
     wrapper.chmod(0o755)
     prompts = run_dir / ".github" / "prompts"
     improve = prompts / "skillopt-improve.prompt.md"
@@ -101,6 +135,15 @@ def isolated_loop(prompt, args):
     if args.benchmark != "searchqa":
         prompt = render_task(prompt, args.benchmark)
         improve_text = render_task(improve_text, args.benchmark)
+        begin = prompt.index("## Setup (round 0 = baseline)")
+        end = prompt.index("## Per-round procedure", begin)
+        prompt = prompt[:begin] + (
+            "## Completed round 0\n\nRead `workspace/.skillopt/initial_dev.json` for the initial "
+            "hard/soft scores and best snapshot. Set val_acc_0, current_acc and best_acc to hard; "
+            "set val_soft_0 and current_soft to soft, and best_round and both streaks to 0. The native "
+            "seed-1 training batch is present in workspace/.skillopt/samples/. Start round 1 now, "
+            "using these samples for improvement.\n\n"
+        ) + prompt[end:]
         context = run_dir / ".github/copilot-instructions.md"
         if args.benchmark == "bird":
             shutil.copyfile(ENV_DIR / "bird-instructions.md", context)
@@ -139,7 +182,24 @@ def verify_test(run_dir, benchmark):
     raise RuntimeError(f"OpenCode exited without complete {benchmark} test results in {eval_root}")
 
 
-def run_isolated_host(argv, cwd, env, benchmark):
+def run_isolated_host(argv, cwd, env, benchmark, *, mild_dev=False, batch=20):
+    if benchmark != "searchqa":
+        flags = ["--dev-round", "0"] if mild_dev else []
+        subprocess.run(["bash", "run.sh", "--split", "val", "--eval_limit", "0", "--limit", "0", *flags],
+                       cwd=cwd, env=env, check=True)
+        state = cwd / "workspace/.skillopt"
+        summary_path, = (state / "_eval_run").glob("val_*/eval_summary.json")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if summary["split"] != "val" or summary["n_items"] != SPLITS[benchmark]["val"][0]:
+            raise RuntimeError("Incomplete initial dev evaluation")
+        snapshot = state / "history" / f"round0__{datetime.now():%Y%m%d_%H%M%S}__best.md"
+        shutil.copyfile(cwd / "workspace/skill.md", snapshot)
+        subprocess.run(["bash", "run.sh", "--split", "train", "--eval_limit", str(batch),
+                        "--limit", str(batch), "--seed", "1"], cwd=cwd, env=env, check=True)
+        (state / "initial_dev.json").write_text(json.dumps({
+            "path": str(summary_path.relative_to(cwd)), "hard": summary["hard"], "soft": summary["soft"],
+            "best_snapshot": str(snapshot.relative_to(cwd)),
+        }, indent=2) + "\n", encoding="utf-8")
     subprocess.run(argv, cwd=cwd, env=env, check=True)
     verify_test(cwd, benchmark)
 
@@ -197,9 +257,18 @@ def main():
     if isolated:
         prompt, cwd = isolated_loop(prompt, args)
         env["SKILLOPT_LITE_ISOLATED_LOOP"] = "1"
-        prompt = (f"Your run directory is {cwd}. Run all commands from this directory. "
-                  "Use its ./run.sh, .github/prompts/ and workspace/ directly. "
-                  "Begin with the round-0 validation in Setup below.\n\n" + prompt)
+        # The copy of fixed_benchmarks.py now lives under the isolated runtime.
+        # Resolve source-checkout defaults before invoking it in the new cwd.
+        env.setdefault(f"{args.benchmark.upper()}_SPLIT_DIR",
+                       str(ENV_DIR.parents[2] / "SkillOpt/data" / f"{args.benchmark}_split"))
+        env.setdefault("BIRD_DB_ROOT", str(DEFAULT_DB_ROOT))
+        venv_python = ENV_DIR.parents[1] / ".venv/bin/python"
+        if venv_python.is_file():
+            env.setdefault("SKILLOPT_LITE_PYTHON", str(venv_python))
+        prompt = (f"The experiment directory is {cwd}. The initial workspace/skill.md, phase runner, "
+                  "runtime/ sources and prompts are ready here. Complete Setup and every round below "
+                  "from this directory. The phase runner handles the fixed dataset and model configuration. "
+                  "Use workspace/ for all snapshots and revisions.\n\n" + prompt)
     prompt += (
         "\n\nOpenCode host: use read/edit/bash for the corresponding tools in this prompt. "
         "OpenCode returns shell results directly. For long evaluations, start the command once "
@@ -210,7 +279,7 @@ def main():
     env["PWD"] = str(cwd)
     argv = ["opencode", "run", "--dir", str(cwd), "--pure", "--agent", "build", "--model", selected, prompt]
     if isolated:
-        run_isolated_host(argv, cwd, env, args.benchmark)
+        run_isolated_host(argv, cwd, env, args.benchmark, mild_dev=args.dev_early_stop, batch=args.batch)
     else:
         os.chdir(cwd)
         os.execvpe("opencode", argv, env)

@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -85,10 +86,21 @@ class FixedBenchmarks(unittest.TestCase):
                 self.assertEqual((failure["res"], failure["status"]), (0, "error"))
 
     def test_host_requires_complete_heldout_test_even_on_zero_exit(self):
+        state = self.root / "workspace/.skillopt"
+        baseline = state / "_eval_run/val_mock"
+        baseline.mkdir(parents=True)
+        (state / "history").mkdir()
+        (state.parent / "skill.md").write_text("seed")
+        (baseline / "eval_summary.json").write_text(json.dumps(dict(split="val", n_items=200, hard=.6, soft=.7)))
         with patch.object(opencode_loop.subprocess, "run") as child:
             with self.assertRaisesRegex(RuntimeError, "without complete hotpotqa test"):
                 opencode_loop.run_isolated_host(["opencode"], self.root, {}, "hotpotqa")
-            child.assert_called_once_with(["opencode"], cwd=self.root, env={}, check=True)
+            self.assertEqual(child.call_args_list[0].args[0],
+                             ["bash", "run.sh", "--split", "val", "--eval_limit", "0", "--limit", "0"])
+            self.assertEqual(child.call_args_list[1].args[0], ["bash", "run.sh", "--split", "train",
+                                                               "--eval_limit", "20", "--limit", "20", "--seed", "1"])
+            self.assertEqual(child.call_args_list[2].args[0], ["opencode"])
+            self.assertEqual(json.loads((state / "initial_dev.json").read_text())["hard"], .6)
 
         ids = ["a", "b"]
         output = self.root / "workspace/.skillopt/_eval_run/test_mock"
@@ -117,7 +129,20 @@ class FixedBenchmarks(unittest.TestCase):
                     opencode_loop.main()
                 cmd, cwd, child_env, task = host.call_args.args
                 self.assertEqual((cwd, child_env["PWD"], cmd[cmd.index("--dir") + 1]), (run_dir, str(run_dir), str(run_dir)))
-                self.assertTrue((run_dir / "skills/initial.md").is_file())
+                self.assertEqual((run_dir / "skills/initial.md").read_bytes(),
+                                 (run_dir / "workspace/skill.md").read_bytes())
+                self.assertTrue((run_dir / "workspace/.skillopt/samples/failed").is_dir())
+                self.assertNotIn(str(runner.ENV_DIR), (run_dir / "run.sh").read_text())
+                self.assertTrue((run_dir / "runtime/copilot_example/searchqa/fixed_searchqa.py").is_file())
+                self.assertFalse(list(run_dir.rglob(".env")))
+                # Run from another directory to exercise the generated wrapper, and
+                # check that the copied runner resolves imports entirely in runtime/.
+                env = dict(child_env, SKILLOPT_LITE_PYTHON=sys.executable)
+                subprocess.run(["bash", str(run_dir / "run.sh"), "--help"], cwd=self.root,
+                               env=env, check=True, capture_output=True)
+                imports = "from skillopt.envs.searchqa.rollout import run_batch; from skillopt.envs.bird.rollout import run_batch; from skillopt.model import chat_target"
+                subprocess.run([sys.executable, "-B", "-c", imports], cwd=run_dir / "runtime",
+                               env={**env, "PYTHONPATH": str(run_dir / "runtime")}, capture_output=True, check=True)
                 prompt = cmd[-1]
                 self.assertIn(f"full ({tasks.SPLITS[benchmark]['test'][0]})", prompt)
                 self.assertNotIn("1400", prompt)
@@ -127,7 +152,7 @@ class FixedBenchmarks(unittest.TestCase):
                 if benchmark == "bird":
                     self.assertNotIn("<answer>", template)
                     self.assertIn("binary execution accuracy", (run_dir / ".github/copilot-instructions.md").read_text())
-                args = shlex.split((run_dir / "run.sh").read_text().splitlines()[1])[3:-1]
+                args = shlex.split((run_dir / "run.sh").read_text().splitlines()[-1])[3:-1]
                 sample = self.bird if benchmark == "bird" else self.qa
                 # One successful and one wrong valid response in the same split.
                 rows = [dict(sample, id=f"id{i}") for i in range(2)]

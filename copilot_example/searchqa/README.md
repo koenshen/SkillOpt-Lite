@@ -142,3 +142,16 @@ python3 opencode_loop.py --benchmark bird --rounds 3 --batch 20 --run-dir "$HOME
 The CPU defaults are `/mnt/sdd3/xuancheng/code/github/SkillOpt/data/<benchmark>_split` and `/mnt/sdd3/xuancheng/code/github/bird-text-to-sql-260820/data_dev/dev_databases`. Override data via `TRIVIAQA_SPLIT_DIR`, `HOTPOTQA_SPLIT_DIR`, `BIRD_SPLIT_DIR` or `BIRD_DB_ROOT` before host launch. A direct phase also accepts `--split_dir` and `--db-root`. The BIRD checker verifies the ID order and the presence of each required SQLite file. Prediction and gold SQL are executed by the grader on a read-only connection under one 30-second deadline. The result-row sets determine EX, and SQL errors/timeouts score zero.
 
 Each phase writes `results.jsonl` and `eval_summary.json` below `<run-dir>/workspace/.skillopt/_eval_run/`. For BIRD, `agent_ok` records whether the model returned, while `exec_status`, `predicted_sql`, `fail_reason` and the per-item trace describe SQL execution. Only training phases export optimizer feedback examples.
+
+
+The isolated OpenCode host contains an initialized `workspace/skill.md`, local
+phase sources under `runtime/`, and a local `run.sh`. The source snapshot is
+restricted to tracked files needed for evaluation. Supply provider credentials
+in the launch environment. Existing benchmark splits and BIRD databases stay
+in their configured locations and are read by the phase runner.
+
+For a new TriviaQA, HotpotQA or BIRD run the launcher invokes the normal full
+round-0 dev and seed-1 training phases before starting OpenCode. Its baseline
+scores, relative summary path and best snapshot are recorded in
+`workspace/.skillopt/initial_dev.json`. The optimizer starts round 1 with
+the exact baseline and original training samples. Both setup phases run once.

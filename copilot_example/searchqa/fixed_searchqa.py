@@ -89,22 +89,7 @@ def prepare_workspace(args):
     if args.benchmark != "searchqa":
         default_workspace = default_workspace.parent / args.benchmark / default_workspace.name
     workspace = (args.workspace or default_workspace).resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
-    marker = workspace / ".benchmark"
-    if marker.exists() and marker.read_text().strip() != args.benchmark:
-        raise ValueError(f"Workspace belongs to another benchmark: {workspace}")
-    if args.benchmark != "searchqa" and not marker.exists():
-        if any(workspace.iterdir()):
-            raise ValueError(f"Use an empty workspace for a new {args.benchmark} run: {workspace}")
-        marker.write_text(args.benchmark + "\n", encoding="utf-8")
-    for directory in ("history", "samples/passed", "samples/failed", "_eval_run"):
-        (workspace / ".skillopt" / directory).mkdir(parents=True, exist_ok=True)
-    local_skill = workspace / "skill.md"
-    if not local_skill.exists():
-        seed_dir = ENV_DIR / "skills"
-        if args.benchmark != "searchqa":
-            seed_dir = seed_dir / args.benchmark
-        shutil.copyfile(seed_dir / "initial.md", local_skill)
+    initialize_workspace(workspace, args.benchmark)
     link = ENV_DIR / "workspace"
     publish_link = (args.benchmark == "searchqa" and not args.dev_early_stop
                     and os.environ.get("SKILLOPT_LITE_ISOLATED_LOOP") != "1")
@@ -112,8 +97,28 @@ def prepare_workspace(args):
         if link.is_symlink():
             link.unlink()
         link.symlink_to(workspace, target_is_directory=True)
-    skill_path = (args.skill or local_skill).resolve(strict=True)
+    skill_path = (args.skill or workspace / "skill.md").resolve(strict=True)
     return workspace, skill_path
+
+
+def initialize_workspace(workspace, benchmark):
+    """Materialize the same starting skill for the host and standalone phase runner."""
+    workspace.mkdir(parents=True, exist_ok=True)
+    marker = workspace / ".benchmark"
+    if marker.exists() and marker.read_text().strip() != benchmark:
+        raise ValueError(f"Workspace belongs to another benchmark: {workspace}")
+    if benchmark != "searchqa" and not marker.exists():
+        if any(workspace.iterdir()):
+            raise ValueError(f"Use an empty workspace for a new {benchmark} run: {workspace}")
+        marker.write_text(benchmark + "\n", encoding="utf-8")
+    for directory in ("history", "samples/passed", "samples/failed", "_eval_run"):
+        (workspace / ".skillopt" / directory).mkdir(parents=True, exist_ok=True)
+    local_skill = workspace / "skill.md"
+    if not local_skill.exists():
+        seed_dir = ENV_DIR / "skills"
+        if benchmark != "searchqa":
+            seed_dir = seed_dir / benchmark
+        shutil.copyfile(seed_dir / "initial.md", local_skill)
 
 
 def run_evaluation(rows, args, skill_path, out):
